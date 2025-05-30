@@ -1,9 +1,20 @@
+# Copyright MewsLabs 2025
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and limitations under the License.
+
+
 from typing import Optional, List, Dict
 
 import keras
 import pandas as pd
 from palma.base.splitting_strategy import ValidationStrategy
-
+import numpy as np
 from revival import LiteModel
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import ShuffleSplit
@@ -25,21 +36,41 @@ class SurrogateModeling:
         self.problem = problem
         self.project_name = project_name
         self.prediction = None
+        self.X_train = None
+        self.y_train = None
+        self.y_test = None
+        self.X_test = None
 
-    def get_best_model(
+    def find_best_model(
         self,
         X: pd.DataFrame,
         y: pd.DataFrame,
         learners: Optional[Dict[str, BaseEstimator]] = None,
+        log_target=False,
     ):
         """Function that aims to select the best model, the user can also add learner to flaml
-        :param X: data for training
-        :param y: data for training
-        :param learners dict, with new learner to add
+        Parameters
+        X: pd.DataFrame
+            X data for training
+        y : pd.DataFrame
+            y data for training
+        learners : Dict
+            Dictionary for new personalized learners
+        log_target : bool
+            True if you need to log-transforming the target
         """
+        if self.problem == "regression":
+            metric = "r2"
+        else:
+            metric = "roc_auc"
+
+        if log_target:
+            y = np.log(y)
+            y = pd.DataFrame(y)
+
         engine_parameters = {
             "time_budget": 50,
-            "metric": "r2",
+            "metric": metric,
             "log_training_metric": True,
             "estimator_list": self.estimator_list,
         }
@@ -50,6 +81,11 @@ class SurrogateModeling:
             )
         )
         X, y = splitting_strategy(X, y)
+        self.X_train = X.loc[splitting_strategy.train_index]
+        self.X_test = X.loc[splitting_strategy.test_index]
+        self.y_train = y.loc[splitting_strategy.train_index]
+        self.y_test = y.loc[splitting_strategy.test_index]
+
         # Project creation
         project = Project(problem=self.problem, project_name=self.project_name)
         project.start(
@@ -78,34 +114,34 @@ class SurrogateModeling:
         self.y = y
 
     @property
-    def get_best_loss(self):
+    def best_loss(self):
         return self.__best_loss
 
     @property
-    def get_supported_metrics(self):
+    def supported_metrics(self):
         return self.__supported_metrics
 
     @property
-    def get_metrics_for_best_config(self):
+    def metrics_for_best_config(self):
         return self.__metrics_for_best_config
 
     @property
-    def get_best_config(self):
+    def best_config(self):
         if isinstance(self.model, keras.Sequential):
             return self.model.summary()
         else:
             return self.__best_config
 
     @property
-    def get_best_time_train_estimator(self):
+    def best_time_train_estimator(self):
         return self.__best_time_train
 
     @property
-    def get_best_config_estimators(self):
+    def best_config_estimators(self):
         return self.__config_estimator
 
     @property
-    def get_estimators_performances(self):
+    def estimators_performances(self):
         """Function that returns the performances of trained estimator"""
         return self.__performance
 
@@ -116,18 +152,24 @@ class SurrogateModeling:
 
     def save(self, folder_name: str, file_name: str):
         """Function aims to save the model, the data and prediction in hdf5 file
-        :param folder_name: The folder name where to save the hfd5 file
-        :param file_name: The file name where to save the model, the data and the prediction
+        Parameters
+        ----------
+        folder_name:str
+            The folder name where to save the hfd5 file
+        file_name: str
+            The file name where to save the model, the data and the prediction
         """
-        srgt_model = LiteModel()
-        srgt_model.set(self.X, self.y, self.model)
+        srgt_model = LiteModel(self.X_train, self.y_train, self.model)
+        srgt_model.score = self.best_loss
         srgt_model.dump(folder_name, file_name)
 
     def predict(self, X_new):
         """Function aims to predict targets from new values
-        :param: X_new : Dataframe or array to predict
+        Parameters
+        ----------
+        X_new :
+        Dataframe or array to predict
         """
-        srgt_model = LiteModel()
-        srgt_model.set(self.X, self.y, self.model)
+        srgt_model = LiteModel(self.X_train, self.y_train, self.model)
         self.prediction = srgt_model.predict(X_new)
         return self.prediction
